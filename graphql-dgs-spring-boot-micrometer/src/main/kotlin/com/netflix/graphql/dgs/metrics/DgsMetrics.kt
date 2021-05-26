@@ -44,6 +44,18 @@ object DgsMetrics {
 
     /** Defines the tags applied to the [GqlMetric] emitted by the framework. */
     enum class GqlTag(val key: String) {
+        /**
+         * QUERY, MUTATION, SUBSCRIPTION are the possible values.
+         * These represent the GraphQL operation that is executed.
+         */
+        OPERATION("gql.operation"),
+
+        /**
+         * GraphQL operation name if any. There is only one operation name per execution.
+         * If the GraphQL query does not have an operation name, anonymous is used instead.
+         */
+        OPERATION_NAME("gql.operation.name"),
+
         /** The sanitized query path. */
         PATH("gql.path"),
 
@@ -66,15 +78,21 @@ object DgsMetrics {
         OUTCOME("outcome"),
 
         /** Used to capture the query complexity.*/
-        QUERY_COMPLEXITY("gql.queryComplexity")
+        QUERY_COMPLEXITY("gql.query.complexity"),
+
+        /**
+         * Query Signature Hash of the query that was executed.
+         * Absent in case the query failed to pass GraphQL validation.
+         */
+        QUERY_SIG_HASH("gql.query.sig.hash"),
     }
 
-    enum class GqlTagValue(val owner: GqlTag, val value: String) {
+    enum class CommonTags(key: String, value: String) {
         /** Value used to reflect as successful  outcome.*/
-        SUCCESS(GqlTag.OUTCOME, "success"),
+        SUCCESS("outcome", "success"),
         /** Value used to reflect a general failure.*/
-        FAILURE(GqlTag.OUTCOME, "failure");
+        FAILURE("outcome", "failure");
 
-        val tag: Tag = Tag.of(owner.key, value)
+        val tag: Tag = Tag.of(key, value)
     }
 }

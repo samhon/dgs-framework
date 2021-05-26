@@ -2,14 +2,16 @@ package com.netflix.graphql.dgs.metrics.micrometer
 
 import com.netflix.graphql.dgs.metrics.micrometer.DgsGraphQLMicrometerAutoConfiguration.Companion.AUTO_CONF_PREFIX
 import com.netflix.graphql.dgs.metrics.micrometer.dataloader.DgsDataLoaderInstrumentationProvider
-import com.netflix.graphql.dgs.metrics.micrometer.tagging.DgsContextualTagCustomizer
-import com.netflix.graphql.dgs.metrics.micrometer.tagging.DgsExecutionTagCustomizer
-import com.netflix.graphql.dgs.metrics.micrometer.tagging.DgsFieldFetchTagCustomizer
-import com.netflix.graphql.dgs.metrics.micrometer.tagging.DgsGraphQLMetricsTagsProvider
-import com.netflix.graphql.dgs.metrics.micrometer.tagging.SimpleGqlOutcomeTagCustomizer
+import com.netflix.graphql.dgs.metrics.micrometer.tagging.*
+import com.netflix.graphql.dgs.metrics.micrometer.utils.CacheableQuerySignatureRepository
+import com.netflix.graphql.dgs.metrics.micrometer.utils.CacheableQuerySignatureRepository.Companion.QUERY_SIG_CACHE
+import com.netflix.graphql.dgs.metrics.micrometer.utils.CacheableQuerySignatureRepository.Companion.QUERY_SIG_CACHE_MANAGER
+import com.netflix.graphql.dgs.metrics.micrometer.utils.QuerySignatureRepository
+import com.netflix.spectator.api.patterns.CardinalityLimiters
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration
 import org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration
 import org.springframework.boot.autoconfigure.AutoConfigureAfter
@@ -17,6 +19,10 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.context.properties.EnableConfigurationProperties
+import org.springframework.cache.CacheManager
+import org.springframework.cache.annotation.EnableCaching
+import org.springframework.cache.concurrent.ConcurrentMapCache
+import org.springframework.cache.support.SimpleCacheManager
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
@@ -36,6 +42,12 @@ open class DgsGraphQLMicrometerAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean
+    open fun meterRegistrySupplier(meterRegistryProvider: ObjectProvider<MeterRegistry>): DgsMeterRegistrySupplier {
+        return DefaultMeterRegistrySupplier(meterRegistryProvider)
+    }
+
+    @Bean
     @ConditionalOnProperty(
         prefix = "$AUTO_CONF_PREFIX.tag-customizers.outcome",
         name = ["enabled"], havingValue = "true", matchIfMissing = true
@@ -52,13 +64,26 @@ open class DgsGraphQLMicrometerAutoConfiguration {
     open fun metricsInstrumentation(
         meterRegistrySupplier: DgsMeterRegistrySupplier,
         tagsProvider: DgsGraphQLMetricsTagsProvider,
-        properties: DgsGraphQLMetricsProperties
+        properties: DgsGraphQLMetricsProperties,
+        querySignatureRepository: QuerySignatureRepository,
+        @Qualifier("graphqlCardinalityLimiterProvider") graphqlCardinalityLimiterProvider: CardinalityLimiterProvider
     ): DgsGraphQLMetricsInstrumentation {
         return DgsGraphQLMetricsInstrumentation(
             meterRegistrySupplier,
             tagsProvider,
-            properties.autotime
+            properties.autotime,
+            querySignatureRepository,
+            graphqlCardinalityLimiterProvider
         )
+    }
+
+    @Bean()
+    @ConditionalOnMissingBean
+    open fun graphqlCardinalityLimiterProvider(properties: DgsGraphQLMetricsProperties): CardinalityLimiterProvider {
+        // TODO[BGP]: Have the limiter max fetched from the properties.
+        return CardinalityLimiterProvider {
+            CardinalityLimiters.first(100)
+        }
     }
 
     @Bean
@@ -85,20 +110,43 @@ open class DgsGraphQLMicrometerAutoConfiguration {
         )
     }
 
-    @Bean
-    @ConditionalOnMissingBean
-    open fun meterRegistrySupplier(meterRegistryProvider: ObjectProvider<MeterRegistry>): DgsMeterRegistrySupplier {
-        return DefaultMeterRegistrySupplier(meterRegistryProvider)
+    @Configuration
+    @ConditionalOnMissingBean(value = [QuerySignatureRepository::class])
+    @EnableCaching
+    open class CachedQuerySignatureRepositoryConfiguration {
+
+        @Bean(QUERY_SIG_CACHE_MANAGER)
+        @ConditionalOnMissingBean(name = [QUERY_SIG_CACHE_MANAGER])
+        open fun querySignatureRepositoryCacheManager(): CacheManager {
+            val cacheManager = SimpleCacheManager()
+            cacheManager.setCaches(
+                listOf(ConcurrentMapCache(QUERY_SIG_CACHE))
+            )
+            return cacheManager
+        }
+
+        @Bean
+        open fun cacheableQuerySignatureRepository(
+            meterRegistrySupplier: DgsMeterRegistrySupplier,
+            properties: DgsGraphQLMetricsProperties
+        ): QuerySignatureRepository {
+            return CacheableQuerySignatureRepository(
+                meterRegistrySupplier,
+                properties.autotime,
+                "dgs.method.latency"
+            )
+        }
     }
 
     internal class DefaultMeterRegistrySupplier(
-        val meterRegistryProvider: ObjectProvider<MeterRegistry>
+        private val meterRegistryProvider: ObjectProvider<MeterRegistry>
     ) : DgsMeterRegistrySupplier {
 
         companion object {
             /** Fallback Micrometer [MeterRegistry] used in case the [ObjectProvider] doesn't define one. */
             private val DEFAULT_METER_REGISTRY = SimpleMeterRegistry()
         }
+
         override fun get(): MeterRegistry {
             return meterRegistryProvider.ifAvailable ?: DEFAULT_METER_REGISTRY
         }

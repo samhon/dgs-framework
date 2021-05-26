@@ -6,7 +6,6 @@ import org.springframework.boot.context.properties.NestedConfigurationProperty
 
 @ConfigurationProperties("management.metrics.dgs-graphql")
 class DgsGraphQLMetricsProperties {
-
     /** Auto-timed queries settings. */
     @NestedConfigurationProperty
     val autotime = AutoTimeProperties()
